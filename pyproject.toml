@@ -1,0 +1,54 @@
+[project]
+name = "slidestolectures"
+version = "0.1.0"
+description = "Turn slideshow PDFs into bookmarked PDFs, slide text, lecture transcripts and narrated audio"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Addison Grant" }]
+requires-python = ">=3.11"
+keywords = ["slides", "pdf", "lecture", "transcript", "text-to-speech", "claude"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Education",
+    "Programming Language :: Python :: 3",
+    "Topic :: Education",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Text Processing",
+]
+dependencies = [
+    "anthropic>=1.13.0",
+    "pymupdf>=1.28.2",
+]
+
+[project.optional-dependencies]
+tts = ["speechify-api>=4.0.0"]
+
+[project.scripts]
+slides-to-lectures = "slidestolectures.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ExNumberless/SlidesToLectures"
+Issues = "https://github.com/ExNumberless/SlidesToLectures/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.17.0",
+    "speechify-api>=4.0.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.15,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "B"]
+ignore = ["B905"]  # zip() over parallel lists of known equal length
+
+[tool.pytest.ini_options]
+filterwarnings = ["ignore:builtin type .* has no __module__ attribute:DeprecationWarning"]
