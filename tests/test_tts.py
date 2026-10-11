@@ -1,3 +1,6 @@
+import json
+from concurrent.futures import Future
+
 import pytest
 
 tts = pytest.importorskip("slidestolectures.tts")
@@ -19,9 +22,6 @@ def test_segments_split_at_pauses_and_limit():
 
 
 def test_encode_writes_chapters_json(tmp_path, monkeypatch):
-    import json
-    from concurrent.futures import Future
-
     def done(pcm):
         f = Future()
         f.set_result(pcm)
@@ -46,7 +46,7 @@ def test_encode_writes_chapters_json(tmp_path, monkeypatch):
     ]
 
 
-def test_run_encodes_from_cache_when_mp3_missing(tmp_path, monkeypatch):
+def test_run_encodes_when_mp3_or_chapters_missing(tmp_path, monkeypatch):
     transcript = tmp_path / "Week 1.md"
     transcript.write_text("# Week 1\n\n## [1] Intro\n\nHello there.\n")
     audio = tmp_path / "audio"
@@ -58,6 +58,10 @@ def test_run_encodes_from_cache_when_mp3_missing(tmp_path, monkeypatch):
     tts.run([transcript], audio, "henry")
     assert encoded == [audio / "Week 1.mp3"]
 
-    (audio / "Week 1.mp3").touch()
+    (audio / "Week 1.mp3").touch()  # MP3 without chapters.json, as from 0.1.0: encode again
     tts.run([transcript], audio, "henry")
-    assert encoded == [audio / "Week 1.mp3"]
+    assert encoded == [audio / "Week 1.mp3"] * 2
+
+    (audio / "Week 1.chapters.json").touch()  # both exist: skip
+    tts.run([transcript], audio, "henry")
+    assert encoded == [audio / "Week 1.mp3"] * 2

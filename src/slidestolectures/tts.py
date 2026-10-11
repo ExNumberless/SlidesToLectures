@@ -10,7 +10,7 @@ also written to <name>.chapters.json beside the MP3.
 
 Audio for each request is cached in <audio dir>/.cache/, keyed by its text and voice, so re-runs
 only synthesize what's missing and editing a transcript only redoes the changed parts. Existing
-MP3s are skipped unless force is set.
+MP3s are skipped unless force is set, or their chapters.json is missing.
 
 Needs SPEECHIFY_API_KEY and ffmpeg.
 """
@@ -252,7 +252,7 @@ def run(files, audio_dir, voice, force=False, rps=RPS, concurrency=CONCURRENCY):
     lectures = []  # (path, out, [(title, [(text, gap)])])
     for f in files:
         out = audio_dir / f"{f.stem}.mp3"
-        if out.exists() and not force:
+        if out.exists() and out.with_suffix(".chapters.json").exists() and not force:
             print(f"skip {rel(out)} (exists; use --force to regenerate)")
             continue
         parts = SECTION.split(f.read_text())[1:]  # [title, body, title, body, ...]

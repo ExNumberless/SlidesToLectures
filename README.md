@@ -52,7 +52,7 @@ Next to each `<name>.mp3`, `tts` writes `<name>.chapters.json` with the same cha
 ]
 ```
 
-`n` is the slide number `N`, `title` the rest of the heading, and `start_ms` and `end_ms` the chapter's span in milliseconds, including the pause after it. It's written whenever the MP3 is, including when all its audio comes from the cache.
+`n` is the slide number `N`, `title` the rest of the heading, and `start_ms` and `end_ms` the chapter's span in milliseconds, including the pause after it. It's written whenever the MP3 is, including when all its audio comes from the cache. If an MP3 exists without its `chapters.json`, such as one made by 0.1.0, `tts` encodes it again, taking its audio from the cache rather than Speechify.
 
 ## Configuration
 
