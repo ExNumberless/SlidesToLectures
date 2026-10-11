@@ -32,3 +32,27 @@ def slides_dir(tmp_path):
     )
     make_deck(d / "Week 2 - Genetics.pdf", [("Genetics", ["DNA"]), ("Inheritance", ["Dominant", "Recessive"])])
     return d
+
+
+class RecordingReporter:
+    """A Reporter that records every call as a tuple."""
+
+    def __init__(self):
+        self.calls = []
+
+    def step(self, name, done, total):
+        self.calls.append(("step", name, done, total))
+
+    def log(self, message):
+        self.calls.append(("log", message))
+
+    def usage(self, vendor, model, **counts):
+        self.calls.append(("usage", vendor, model, counts))
+
+    def of(self, kind):
+        return [c[1:] for c in self.calls if c[0] == kind]
+
+
+@pytest.fixture
+def reporter():
+    return RecordingReporter()
