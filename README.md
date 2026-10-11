@@ -41,6 +41,19 @@ Every command takes `--input DIR` (the slideshow PDFs), `--out DIR` (default `ou
 
 `toc`, `text` and `vision` accept deck names to process only some decks; `lecture` and `tts` accept Markdown files.
 
+### Chapters
+
+Next to each `<name>.mp3`, `tts` writes `<name>.chapters.json` with the same chapters as the MP3, one per `## [N] Title` section of the transcript, so other tools don't have to read them back from the audio:
+
+```json
+[
+  {"n": 5, "title": "Cells", "start_ms": 0, "end_ms": 41230},
+  {"n": 6, "title": "Organelles", "start_ms": 41230, "end_ms": 98770}
+]
+```
+
+`n` is the slide number `N`, `title` the rest of the heading, and `start_ms` and `end_ms` the chapter's span in milliseconds, including the pause after it. It's written whenever the MP3 is, including when all its audio comes from the cache.
+
 ## Configuration
 
 Put a `slidestolectures.toml` in the directory you run from (or pass `--config`), so you don't have to repeat options:
