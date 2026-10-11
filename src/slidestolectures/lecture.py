@@ -10,11 +10,13 @@ Needs ANTHROPIC_API_KEY (or another credential the Anthropic SDK can find).
 import re
 
 from .paths import rel
+from .report import PrintReporter
 
 SLIDE_HEADING = re.compile(r"^## \[(\d+)\]", re.MULTILINE)
 
 
-def generate(client, plugin, model, path):
+def generate(client, plugin, model, path, reporter=None):
+    reporter = reporter or PrintReporter()
     text = path.read_text()
     m = re.match(r"# (.+)\n", text)
     title = m.group(1) if m else path.stem
@@ -31,29 +33,40 @@ def generate(client, plugin, model, path):
     ) as stream:
         response = stream.get_final_message()
 
+    u = response.usage
+    reporter.usage(
+        "anthropic",
+        response.model,
+        input_tokens=u.input_tokens,
+        output_tokens=u.output_tokens,
+        cache_read_tokens=u.cache_read_input_tokens or 0,
+    )
     if response.stop_reason != "end_turn":
         raise SystemExit(f"{path.name}: stopped with {response.stop_reason}")
     lecture = "".join(b.text for b in response.content if b.type == "text").strip()
 
     missing = sorted(set(slides) - set(SLIDE_HEADING.findall(lecture)), key=int)
     if missing:
-        print(f"  warning: no section for slide(s) {', '.join(missing)}")
-    u = response.usage
-    print(f"  {u.input_tokens} input / {u.output_tokens} output tokens")
+        reporter.log(f"  warning: no section for slide(s) {', '.join(missing)}")
+    reporter.log(f"  {u.input_tokens} input / {u.output_tokens} output tokens")
     return f"# Lecture: {title}\n\n{lecture}\n"
 
 
-def run(plugin, files, lecture_dir, model=None, force=False):
-    """Write lecture_dir/<name>.md for each slide-text Markdown file in files."""
+def run(plugin, files, lecture_dir, model=None, force=False, reporter=None):
+    """Write lecture_dir/<name>.md for each slide-text Markdown file in files.
+
+    reporter (a report.Reporter) receives output and token usage; by default it prints.
+    """
     import anthropic
 
+    reporter = reporter or PrintReporter()
     lecture_dir.mkdir(parents=True, exist_ok=True)
     client = anthropic.Anthropic()
     for f in files:
         out = lecture_dir / f.name
         if out.exists() and not force:
-            print(f"skip {rel(out)} (exists; use --force to regenerate)")
+            reporter.log(f"skip {rel(out)} (exists; use --force to regenerate)")
             continue
-        print(f"== {f.name}")
-        out.write_text(generate(client, plugin, model or plugin.lecture_model, f))
-        print(f"-> {rel(out)}")
+        reporter.log(f"== {f.name}")
+        out.write_text(generate(client, plugin, model or plugin.lecture_model, f, reporter))
+        reporter.log(f"-> {rel(out)}")

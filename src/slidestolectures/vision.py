@@ -15,9 +15,18 @@ import re
 import pymupdf
 
 from .paths import rel
+from .report import PrintReporter
 
 CONCURRENCY = 8
 ZOOM = 2  # 720x540pt slides render at 1440x1080px
+
+
+class SlidePrinter(PrintReporter):
+    """vision's default reporter: prints each slide as it's transcribed, as the CLI always has."""
+
+    def step(self, name, done, total):
+        if done and not name.endswith("(cached)"):
+            print(f"  {name}", flush=True)
 
 
 def render(page):
@@ -25,7 +34,8 @@ def render(page):
     return base64.standard_b64encode(pix.tobytes("png")).decode()
 
 
-async def transcribe(client, sem, model, prompt, image, label):
+async def transcribe(client, sem, model, prompt, image, label, reporter=None):
+    """Return Claude's Markdown transcription of a base64 PNG, reporting the call's token usage."""
     async with sem:
         response = await client.beta.messages.create(
             model=model,
@@ -43,27 +53,42 @@ async def transcribe(client, sem, model, prompt, image, label):
                 }
             ],
         )
+    if reporter:
+        u = response.usage
+        reporter.usage(
+            "anthropic",
+            response.model,
+            input_tokens=u.input_tokens,
+            output_tokens=u.output_tokens,
+            cache_read_tokens=u.cache_read_input_tokens or 0,
+        )
     if response.stop_reason != "end_turn":
         raise RuntimeError(f"{label}: stopped with {response.stop_reason}")
-    text = "".join(b.text for b in response.content if b.type == "text").strip()
-    print(f"  {label}")
-    return text
+    return "".join(b.text for b in response.content if b.type == "text").strip()
 
 
-async def process(client, sem, plugin, model, deck, text_dir):
+async def process(client, sem, plugin, model, deck, text_dir, reporter):
     cache = text_dir / ".cache" / deck.name
     cache.mkdir(parents=True, exist_ok=True)
     prompt = plugin.vision_prompt()
-    print(f"== {deck.path.name}")
+    reporter.log(f"== {deck.path.name}")
 
     with pymupdf.open(deck.path) as doc:
+        done = 0
+        reporter.step(deck.path.name, done, doc.page_count)
 
         async def slide(i):
             n = deck.first + i
             cached = cache / f"{n}.md"
-            if not cached.exists():
-                text = await transcribe(client, sem, model, prompt, render(doc[i]), f"slide {n}")
+            nonlocal done
+            label = f"slide {n}"
+            if cached.exists():
+                label += " (cached)"
+            else:
+                text = await transcribe(client, sem, model, prompt, render(doc[i]), label, reporter)
                 cached.write_text(text + "\n")
+            done += 1
+            reporter.step(label, done, doc.page_count)
             text = cached.read_text().strip()
             if text.startswith("## (untitled)") and (title := plugin.slide_title(deck, n, None)):
                 text = f"## {title}" + text.removeprefix("## (untitled)")
@@ -75,17 +100,22 @@ async def process(client, sem, plugin, model, deck, text_dir):
         slides = await asyncio.gather(*(slide(i) for i in range(doc.page_count)))
     out = text_dir / f"{deck.name}.md"
     out.write_text("\n\n".join([f"# {deck.title} (Slides {deck.first}–{deck.last})", *slides]) + "\n")
-    print(f"-> {rel(out)}")
+    reporter.log(f"-> {rel(out)}")
 
 
-async def _run(plugin, decks, text_dir, model):
+async def _run(plugin, decks, text_dir, model, reporter):
     import anthropic
 
     sem = asyncio.Semaphore(CONCURRENCY)
     async with anthropic.AsyncAnthropic() as client:
         for deck in decks:
-            await process(client, sem, plugin, model, deck, text_dir)
+            await process(client, sem, plugin, model, deck, text_dir, reporter)
 
 
-def run(plugin, decks, text_dir, model=None):
-    asyncio.run(_run(plugin, decks, text_dir, model or plugin.vision_model))
+def run(plugin, decks, text_dir, model=None, reporter=None):
+    """Write text_dir/<deck name>.md for each deck.
+
+    reporter (a report.Reporter) receives output, per-page progress and token usage; by default it
+    prints each slide as it's transcribed.
+    """
+    asyncio.run(_run(plugin, decks, text_dir, model or plugin.vision_model, reporter or SlidePrinter()))

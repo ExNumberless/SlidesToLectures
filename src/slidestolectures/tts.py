@@ -5,17 +5,19 @@ sentence, breaks). Requests for all lectures share one thread pool, with progres
 finishes. Requests are spaced to stay under the plan's rate limit, and the spacing widens when
 the API returns 429 and narrows again after successes. Rate limits and server errors are retried
 with exponential backoff, honoring Retry-After; running out of credit stops the run. Audio is
-joined with short pauses into one MP3 per lecture, with a chapter per slide.
+joined with short pauses into one MP3 per lecture, with a chapter per slide. The chapters are
+also written to <name>.chapters.json beside the MP3.
 
 Audio for each request is cached in <audio dir>/.cache/, keyed by its text and voice, so re-runs
 only synthesize what's missing and editing a transcript only redoes the changed parts. Existing
-MP3s are skipped unless force is set.
+MP3s are skipped unless force is set, or their chapters.json is missing.
 
 Needs SPEECHIFY_API_KEY and ffmpeg.
 """
 
 import base64
 import hashlib
+import json
 import random
 import re
 import subprocess
@@ -28,6 +30,7 @@ from speechify.core.api_error import ApiError
 from speechify.core.request_options import RequestOptions
 
 from .paths import rel
+from .report import PrintReporter
 
 MODEL = "simba-3.2"
 RPS, CONCURRENCY = 20, 15  # Starter plan limits; Free allows 1 req/s and 3 concurrent
@@ -37,6 +40,7 @@ RATE = 24000  # pcm_24000: 24 kHz mono 16-bit little-endian
 CHUNK_GAP, PAUSE_GAP, SLIDE_GAP = 0.4, 2.5, 1.2  # seconds of silence
 
 SECTION = re.compile(r"^## (\[\d+\].*)$", re.MULTILINE)
+NUMBERED = re.compile(r"\[(\d+)\]\s*(.*)")  # a SECTION title: "[N] Title"
 PAUSE = "\x00"  # marks a [pause ...] cue: becomes silence between requests
 
 
@@ -85,23 +89,25 @@ def segments(body):
 
 
 class Progress:
-    def __init__(self, total):
-        self.total, self.done, self.start = total, 0, time.time()
+    """Counts finished requests and passes output to a reporter, one thread at a time."""
+
+    def __init__(self, total, reporter):
+        self.total, self.done, self.reporter = total, 0, reporter
         self.lock = threading.Lock()
+        reporter.step("speechify", 0, total)
 
     def log(self, msg):
         with self.lock:
-            print(msg, flush=True)
+            self.reporter.log(msg)
 
     def step(self, msg):
         with self.lock:
             self.done += 1
-            elapsed = time.time() - self.start
-            eta = elapsed / self.done * (self.total - self.done)
-            print(
-                f"[{self.done}/{self.total}] {msg}  (ETA {eta / 60:.0f} min)",
-                flush=True,
-            )
+            self.reporter.step(msg, self.done, self.total)
+
+    def usage(self, voice, characters):
+        with self.lock:
+            self.reporter.usage("speechify", voice, characters=characters)
 
 
 class Limiter:
@@ -157,6 +163,7 @@ def synthesize(client, limiter, cache_dir, text, voice, label, progress, stop):
                 output_format="pcm_24000",
                 request_options=RequestOptions(max_retries=0, timeout_in_seconds=120),
             )
+            progress.usage(voice, len(text))
             pcm = base64.b64decode(r.audio_data)
             limiter.succeeded()
             break
@@ -186,7 +193,7 @@ def silence(seconds):
 
 
 def encode(path, slides, futures, out, cache_dir):
-    """Join a lecture's audio into an MP3 with one chapter per slide."""
+    """Join a lecture's audio into an MP3 with one chapter per slide, and write its chapters.json."""
     pcm, chapters = bytearray(), []
     for title, segs in slides:
         start = len(pcm)
@@ -235,17 +242,26 @@ def encode(path, slides, futures, out, cache_dir):
         input=bytes(pcm),
         check=True,
     )
+    chapters_json = []
+    for title, start, end in chapters:
+        n, name = NUMBERED.match(title).groups()
+        chapters_json.append({"n": int(n), "title": name.strip(), "start_ms": ms(start), "end_ms": ms(end)})
+    out.with_suffix(".chapters.json").write_text(json.dumps(chapters_json, indent=2) + "\n")
     return ms(len(pcm)) / 60000
 
 
-def run(files, audio_dir, voice, force=False, rps=RPS, concurrency=CONCURRENCY):
-    """Write audio_dir/<name>.mp3 for each lecture transcript in files."""
+def run(files, audio_dir, voice, force=False, rps=RPS, concurrency=CONCURRENCY, reporter=None):
+    """Write audio_dir/<name>.mp3 for each lecture transcript in files.
+
+    reporter (a report.Reporter) receives output, progress and character usage; by default it prints.
+    """
+    reporter = reporter or PrintReporter()
     cache_dir = audio_dir / ".cache"
     lectures = []  # (path, out, [(title, [(text, gap)])])
     for f in files:
         out = audio_dir / f"{f.stem}.mp3"
-        if out.exists() and not force:
-            print(f"skip {rel(out)} (exists; use --force to regenerate)")
+        if out.exists() and out.with_suffix(".chapters.json").exists() and not force:
+            reporter.log(f"skip {rel(out)} (exists; use --force to regenerate)")
             continue
         parts = SECTION.split(f.read_text())[1:]  # [title, body, title, body, ...]
         lectures.append((f, out, [(t, segments(b)) for t, b in zip(parts[::2], parts[1::2])]))
@@ -254,11 +270,11 @@ def run(files, audio_dir, voice, force=False, rps=RPS, concurrency=CONCURRENCY):
 
     total = sum(len(segs) for *_, slides in lectures for _, segs in slides)
     chars = sum(len(text) for *_, slides in lectures for _, segs in slides for text, _ in segs)
-    print(f"{len(lectures)} lecture(s), {total} requests, {chars:,} characters, voice {voice}", flush=True)
+    reporter.log(f"{len(lectures)} lecture(s), {total} requests, {chars:,} characters, voice {voice}")
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     client, limiter = Speechify(), Limiter(rps)
-    progress, stop = Progress(total), threading.Event()
+    progress, stop = Progress(total, reporter), threading.Event()
     with ThreadPoolExecutor(concurrency) as pool:
         # Queue every request up front so the pool stays busy across lecture boundaries.
         queued = []

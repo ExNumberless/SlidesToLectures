@@ -3,6 +3,7 @@
 from importlib.metadata import version
 
 from .plugin import Deck, Plugin
+from .report import PrintReporter, Reporter
 
 __version__ = version("slidestolectures")
-__all__ = ["Deck", "Plugin", "__version__"]
+__all__ = ["Deck", "Plugin", "PrintReporter", "Reporter", "__version__"]
