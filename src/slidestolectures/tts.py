@@ -28,6 +28,7 @@ from speechify.core.api_error import ApiError
 from speechify.core.request_options import RequestOptions
 
 from .paths import rel
+from .report import PrintReporter
 
 MODEL = "simba-3.2"
 RPS, CONCURRENCY = 20, 15  # Starter plan limits; Free allows 1 req/s and 3 concurrent
@@ -85,23 +86,25 @@ def segments(body):
 
 
 class Progress:
-    def __init__(self, total):
-        self.total, self.done, self.start = total, 0, time.time()
+    """Counts finished requests and passes output to a reporter, one thread at a time."""
+
+    def __init__(self, total, reporter):
+        self.total, self.done, self.reporter = total, 0, reporter
         self.lock = threading.Lock()
+        reporter.step("speechify", 0, total)
 
     def log(self, msg):
         with self.lock:
-            print(msg, flush=True)
+            self.reporter.log(msg)
 
     def step(self, msg):
         with self.lock:
             self.done += 1
-            elapsed = time.time() - self.start
-            eta = elapsed / self.done * (self.total - self.done)
-            print(
-                f"[{self.done}/{self.total}] {msg}  (ETA {eta / 60:.0f} min)",
-                flush=True,
-            )
+            self.reporter.step(msg, self.done, self.total)
+
+    def usage(self, voice, characters):
+        with self.lock:
+            self.reporter.usage("speechify", voice, characters=characters)
 
 
 class Limiter:
@@ -157,6 +160,7 @@ def synthesize(client, limiter, cache_dir, text, voice, label, progress, stop):
                 output_format="pcm_24000",
                 request_options=RequestOptions(max_retries=0, timeout_in_seconds=120),
             )
+            progress.usage(voice, len(text))
             pcm = base64.b64decode(r.audio_data)
             limiter.succeeded()
             break
@@ -238,14 +242,18 @@ def encode(path, slides, futures, out, cache_dir):
     return ms(len(pcm)) / 60000
 
 
-def run(files, audio_dir, voice, force=False, rps=RPS, concurrency=CONCURRENCY):
-    """Write audio_dir/<name>.mp3 for each lecture transcript in files."""
+def run(files, audio_dir, voice, force=False, rps=RPS, concurrency=CONCURRENCY, reporter=None):
+    """Write audio_dir/<name>.mp3 for each lecture transcript in files.
+
+    reporter (a report.Reporter) receives output, progress and character usage; by default it prints.
+    """
+    reporter = reporter or PrintReporter()
     cache_dir = audio_dir / ".cache"
     lectures = []  # (path, out, [(title, [(text, gap)])])
     for f in files:
         out = audio_dir / f"{f.stem}.mp3"
         if out.exists() and not force:
-            print(f"skip {rel(out)} (exists; use --force to regenerate)")
+            reporter.log(f"skip {rel(out)} (exists; use --force to regenerate)")
             continue
         parts = SECTION.split(f.read_text())[1:]  # [title, body, title, body, ...]
         lectures.append((f, out, [(t, segments(b)) for t, b in zip(parts[::2], parts[1::2])]))
@@ -254,11 +262,11 @@ def run(files, audio_dir, voice, force=False, rps=RPS, concurrency=CONCURRENCY):
 
     total = sum(len(segs) for *_, slides in lectures for _, segs in slides)
     chars = sum(len(text) for *_, slides in lectures for _, segs in slides for text, _ in segs)
-    print(f"{len(lectures)} lecture(s), {total} requests, {chars:,} characters, voice {voice}", flush=True)
+    reporter.log(f"{len(lectures)} lecture(s), {total} requests, {chars:,} characters, voice {voice}")
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     client, limiter = Speechify(), Limiter(rps)
-    progress, stop = Progress(total), threading.Event()
+    progress, stop = Progress(total, reporter), threading.Event()
     with ThreadPoolExecutor(concurrency) as pool:
         # Queue every request up front so the pool stays busy across lecture boundaries.
         queued = []

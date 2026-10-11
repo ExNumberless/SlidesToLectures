@@ -106,6 +106,16 @@ Use it with `--plugin my_plugin.py`, `--plugin my_plugin.py:BiologyPlugin`, `--p
 | `is_continuation(title)` | Titles with "cont'd" or "continued" get no bookmark |
 | `vision_prompt()`, `lecture_system()`, `lecture_prompt(title, slides)` | Built from the settings |
 
+## Progress and usage
+
+`lecture.run` and `tts.run` take an optional `reporter` that receives their output instead of stdout. It implements `slidestolectures.Reporter`:
+
+- `step(name, done, total)`: progress, where `name` is the item just finished. A step starts with `done` 0.
+- `log(message)`: a line the CLI would print.
+- `usage(vendor, model, *, input_tokens, output_tokens, cache_read_tokens, characters, requests)`: called once per Claude call (`"anthropic"`, the model, token counts) and once per Speechify request (`"speechify"`, the voice, characters sent).
+
+Calls come from one thread at a time. The default, `slidestolectures.PrintReporter`, prints what the CLI shows.
+
 ## Development
 
 ```bash
